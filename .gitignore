@@ -1,3 +1,22 @@
+# Android Stutio generated .gitignore content
+*.iml
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+/app/release/
+/app/debug/
+/app/build/
+
 # Gradle files
 .gradle/
 build/
@@ -17,7 +36,6 @@ captures/
 output-metadata.json
 
 # IntelliJ
-*.iml
 .idea/
 misc.xml
 deploymentTargetDropDown.xml
