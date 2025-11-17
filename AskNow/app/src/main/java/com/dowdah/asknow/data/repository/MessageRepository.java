@@ -27,9 +27,10 @@ import dagger.hilt.android.qualifiers.ApplicationContext;
 @Singleton
 public class MessageRepository {
     private static final String TAG = "MessageRepository";
-    private static final int MAX_RETRY_COUNT = 3;
-    private static final long INITIAL_RETRY_DELAY = 1000; // 1秒
-    private static final int RETRY_BACKOFF_MULTIPLIER = 2; // 指数退避
+    // 使用 AppConstants 替代硬编码值
+    private static final int MAX_RETRY_COUNT = com.dowdah.asknow.constants.AppConstants.MAX_RETRY_COUNT;
+    private static final long INITIAL_RETRY_DELAY = com.dowdah.asknow.constants.AppConstants.INITIAL_RETRY_DELAY_MS;
+    private static final int RETRY_BACKOFF_MULTIPLIER = com.dowdah.asknow.constants.AppConstants.RETRY_BACKOFF_MULTIPLIER;
     
     private final PendingMessageDao pendingMessageDao;
     private final com.dowdah.asknow.data.local.dao.MessageDao messageDao;
@@ -244,10 +245,35 @@ public class MessageRepository {
     }
     
     /**
-     * 获取指定问题的未读消息数量（同步）
+     * 获取指定问题的未读消息数量（异步）
+     * 注意：此方法在后台线程执行，避免ANR风险
+     * 
+     * @param questionId 问题ID
+     * @param currentUserId 当前用户ID
+     * @param callback 回调接口
      */
-    public int getUnreadMessageCountSync(long questionId, long currentUserId) {
-        return messageDao.getUnreadMessageCount(questionId, currentUserId);
+    public void getUnreadMessageCountAsync(long questionId, long currentUserId, UnreadCountCallback callback) {
+        executor.execute(() -> {
+            try {
+                int count = messageDao.getUnreadMessageCount(questionId, currentUserId);
+                if (callback != null) {
+                    callback.onCountReceived(count);
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error getting unread message count", e);
+                if (callback != null) {
+                    callback.onError(getDetailedErrorMessage(e));
+                }
+            }
+        });
+    }
+    
+    /**
+     * 未读消息数量回调接口
+     */
+    public interface UnreadCountCallback {
+        void onCountReceived(int count);
+        void onError(String error);
     }
     
     /**
@@ -382,7 +408,8 @@ public class MessageRepository {
             Log.w(TAG, error + ". Retrying in " + delay + "ms (attempt " + (retryCount + 1) + "/" + MAX_RETRY_COUNT + ")");
             
             // 延迟后重试
-            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+            // 使用非弃用的 Handler 构造函数（显式传入 null 作为 callback）
+            new android.os.Handler(android.os.Looper.getMainLooper(), null).postDelayed(() -> {
                 markMessagesAsReadWithRetry(token, questionId, currentUserId, callback, retryCount + 1);
             }, delay);
         } else {

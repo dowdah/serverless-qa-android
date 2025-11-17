@@ -227,7 +227,7 @@ public class QuestionAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolde
             if (messageDao != null && currentUserId > 0) {
                 sharedExecutor.execute(() -> {
                     int unreadCount = messageDao.getUnreadMessageCount(question.getId(), currentUserId);
-                    new Handler(Looper.getMainLooper()).post(() -> {
+                    new Handler(Looper.getMainLooper(), null).post(() -> {
                         if (unreadCount > 0) {
                             tvUnreadBadge.setText(String.valueOf(Math.min(unreadCount, 99)));
                             tvUnreadBadge.setVisibility(View.VISIBLE);

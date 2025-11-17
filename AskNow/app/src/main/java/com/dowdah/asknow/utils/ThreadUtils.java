@@ -16,7 +16,7 @@ public final class ThreadUtils {
     
     private static final ExecutorService IO_EXECUTOR = Executors.newFixedThreadPool(CORE_POOL_SIZE);
     private static final ExecutorService SINGLE_EXECUTOR = Executors.newSingleThreadExecutor();
-    private static final Handler MAIN_HANDLER = new Handler(Looper.getMainLooper());
+    private static final Handler MAIN_HANDLER = new Handler(Looper.getMainLooper(), null);
     
     // Private constructor to prevent instantiation
     private ThreadUtils() {

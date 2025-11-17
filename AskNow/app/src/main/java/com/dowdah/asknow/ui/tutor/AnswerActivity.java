@@ -9,6 +9,7 @@ import androidx.lifecycle.ViewModelProvider;
 import androidx.recyclerview.widget.LinearLayoutManager;
 
 import com.bumptech.glide.Glide;
+import com.dowdah.asknow.BuildConfig;
 import com.dowdah.asknow.R;
 import com.dowdah.asknow.constants.QuestionStatus;
 import com.dowdah.asknow.data.local.dao.MessageDao;
@@ -36,6 +37,8 @@ public class AnswerActivity extends AppCompatActivity {
     private long currentUserId;
     private String currentStatus;
     private ExecutorService executor;
+    private boolean isActivityInForeground = false;
+    private boolean shouldScrollToBottom = false;
     
     @Inject
     QuestionDao questionDao;
@@ -99,7 +102,7 @@ public class AnswerActivity extends AppCompatActivity {
                         binding.tvStatus.setText(getStatusText(currentStatus));
                         
                         if (question.getImagePath() != null && !question.getImagePath().isEmpty()) {
-                            String imageUrl = "http://10.0.2.2:8000" + question.getImagePath();
+                            String imageUrl = BuildConfig.BASE_URL.replaceAll("/$", "") + question.getImagePath();
                             Glide.with(this)
                                 .load(imageUrl)
                                 .into(binding.ivQuestion);
@@ -158,13 +161,40 @@ public class AnswerActivity extends AppCompatActivity {
         }
     }
     
+    /**
+     * 检查用户是否在列表底部
+     * 用于智能滚动判断
+     */
+    private boolean isUserAtBottom() {
+        LinearLayoutManager layoutManager = (LinearLayoutManager) binding.recyclerViewMessages.getLayoutManager();
+        if (layoutManager != null) {
+            int lastVisiblePosition = layoutManager.findLastCompletelyVisibleItemPosition();
+            int totalItems = messageAdapter.getItemCount();
+            // 最后一项可见，或倒数第2项可见（容错）
+            return lastVisiblePosition >= totalItems - 2;
+        }
+        return true; // 默认返回 true，确保首次加载时滚动到底部
+    }
+    
     private void observeMessages() {
         messageDao.getMessagesByQuestionId(questionId).observe(this, messages -> {
             if (messages != null) {
+                int previousSize = messageAdapter.getItemCount();
                 messageAdapter.setMessages(messages);
-                // 滚动到最新消息
+                
+                // 智能滚动：仅在必要时滚动到底部
                 if (messages.size() > 0) {
-                    binding.recyclerViewMessages.scrollToPosition(messages.size() - 1);
+                    boolean shouldScroll = shouldScrollToBottom || 
+                                          (messages.size() > previousSize && isUserAtBottom());
+                    if (shouldScroll) {
+                        binding.recyclerViewMessages.smoothScrollToPosition(messages.size() - 1);
+                        shouldScrollToBottom = false; // 重置标志
+                    }
+                }
+                
+                // 如果界面在前台，自动标记未读消息为已读
+                if (isActivityInForeground) {
+                    markMessagesAsReadIfNeeded();
                 }
             }
         });
@@ -220,14 +250,23 @@ public class AnswerActivity extends AppCompatActivity {
             return;
         }
         
+        // 发送消息时设置标志，确保滚动到底部
+        shouldScrollToBottom = true;
         chatViewModel.sendMessage(questionId, content);
     }
     
     @Override
     protected void onResume() {
         super.onResume();
+        isActivityInForeground = true;
         // 检查是否有未读消息，只在有未读消息时才标记
         checkAndMarkMessagesAsRead();
+    }
+    
+    @Override
+    protected void onPause() {
+        super.onPause();
+        isActivityInForeground = false;
     }
     
     /**
@@ -235,6 +274,14 @@ public class AnswerActivity extends AppCompatActivity {
      * 只有在有未读消息时才调用 API，避免不必要的网络请求
      */
     private void checkAndMarkMessagesAsRead() {
+        markMessagesAsReadIfNeeded();
+    }
+    
+    /**
+     * 标记消息为已读（如果有未读消息）
+     * 该方法可以在消息列表更新或界面恢复时调用
+     */
+    private void markMessagesAsReadIfNeeded() {
         if (executor != null && !executor.isShutdown()) {
             executor.execute(() -> {
                 int unreadCount = messageDao.getUnreadMessageCount(questionId, currentUserId);

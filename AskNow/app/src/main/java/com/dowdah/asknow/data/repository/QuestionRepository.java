@@ -11,6 +11,7 @@ import com.dowdah.asknow.data.model.MessagesListResponse;
 import com.dowdah.asknow.data.model.QuestionsListResponse;
 import com.dowdah.asknow.utils.RetryHelper;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -57,7 +58,15 @@ public class QuestionRepository {
      * @param callback 同步回调
      */
     public void syncQuestionsFromServer(String token, long userId, String role, SyncCallback callback) {
-        syncQuestionsFromServer(token, userId, role, 1, 20, false, callback);
+        syncQuestionsFromServer(
+            token, 
+            userId, 
+            role, 
+            com.dowdah.asknow.constants.AppConstants.DEFAULT_START_PAGE,
+            com.dowdah.asknow.constants.AppConstants.DEFAULT_QUESTIONS_PAGE_SIZE,
+            false, 
+            callback
+        );
     }
     
     /**
@@ -165,7 +174,82 @@ public class QuestionRepository {
     }
     
     /**
-     * 同步每个问题的消息
+     * 单个问题消息同步完成的回调接口
+     */
+    private interface OnSingleQuestionMessagesSyncedCallback {
+        void onSuccess(int messageCount, int pageCount);
+        void onError(String errorMessage);
+    }
+    
+    /**
+     * 递归获取单个问题的所有分页消息
+     * 
+     * @param authHeader 认证头
+     * @param questionId 问题ID
+     * @param allMessages 累积所有消息的列表
+     * @param currentPage 当前页码
+     * @param callback 同步完成回调
+     */
+    private void syncAllMessagesForQuestion(
+        String authHeader,
+        long questionId,
+        List<MessagesListResponse.MessageData> allMessages,
+        int currentPage,
+        OnSingleQuestionMessagesSyncedCallback callback
+    ) {
+        apiService.getMessages(
+            authHeader,
+            questionId,
+            currentPage,
+            com.dowdah.asknow.constants.AppConstants.DEFAULT_MESSAGES_PAGE_SIZE
+        ).enqueue(new Callback<MessagesListResponse>() {
+            @Override
+            public void onResponse(Call<MessagesListResponse> call, Response<MessagesListResponse> response) {
+                if (response.isSuccessful() && response.body() != null && response.body().isSuccess()) {
+                    List<MessagesListResponse.MessageData> pageMessages = response.body().getMessages();
+                    com.dowdah.asknow.data.model.Pagination pagination = response.body().getPagination();
+                    
+                    // 将当前页消息添加到累积列表
+                    if (pageMessages != null && !pageMessages.isEmpty()) {
+                        allMessages.addAll(pageMessages);
+                    }
+                    
+                    // 检查是否还有更多页
+                    if (pagination != null && pagination.hasMore()) {
+                        Log.d(TAG, "Question " + questionId + " page " + currentPage + " fetched, has more pages");
+                        // 递归获取下一页
+                        syncAllMessagesForQuestion(authHeader, questionId, allMessages, currentPage + 1, callback);
+                    } else {
+                        // 所有页都已获取完成
+                        int totalPages = pagination != null ? pagination.getTotalPages() : currentPage;
+                        Log.d(TAG, "Question " + questionId + " all pages fetched: " + allMessages.size() + 
+                              " messages across " + totalPages + " pages");
+                        
+                        if (callback != null) {
+                            callback.onSuccess(allMessages.size(), totalPages);
+                        }
+                    }
+                } else {
+                    Log.e(TAG, "Failed to fetch messages for question " + questionId + " page " + currentPage + 
+                          ": " + response.code());
+                    if (callback != null) {
+                        callback.onError("API response failed: " + response.code());
+                    }
+                }
+            }
+            
+            @Override
+            public void onFailure(Call<MessagesListResponse> call, Throwable t) {
+                Log.e(TAG, "Network error fetching messages for question " + questionId + " page " + currentPage, t);
+                if (callback != null) {
+                    callback.onError("Network error: " + t.getMessage());
+                }
+            }
+        });
+    }
+    
+    /**
+     * 同步每个问题的消息（使用完整分页同步）
      */
     private void syncMessagesForQuestions(String token, List<QuestionsListResponse.QuestionData> questions, boolean hasMore, SyncCallback callback) {
         if (questions.isEmpty()) {
@@ -178,24 +262,29 @@ public class QuestionRepository {
         
         String authHeader = "Bearer " + token;
         AtomicInteger completedCount = new AtomicInteger(0);
-        AtomicInteger dbOperationCompletedCount = new AtomicInteger(0);
         AtomicInteger totalCount = new AtomicInteger(questions.size());
+        
+        Log.d(TAG, "Starting messages sync for " + questions.size() + " questions");
         
         for (QuestionsListResponse.QuestionData question : questions) {
             long questionId = question.getId();
             
-            // 使用默认分页参数同步消息
-            apiService.getMessages(authHeader, questionId, 1, 50).enqueue(new Callback<MessagesListResponse>() {
-                @Override
-                public void onResponse(Call<MessagesListResponse> call, Response<MessagesListResponse> response) {
-                    if (response.isSuccessful() && response.body() != null && response.body().isSuccess()) {
-                        List<MessagesListResponse.MessageData> serverMessages = response.body().getMessages();
-                        
+            // 使用新的递归方法获取所有分页消息
+            List<MessagesListResponse.MessageData> allMessages = new ArrayList<>();
+            syncAllMessagesForQuestion(
+                authHeader,
+                questionId,
+                allMessages,
+                com.dowdah.asknow.constants.AppConstants.DEFAULT_START_PAGE,
+                new OnSingleQuestionMessagesSyncedCallback() {
+                    @Override
+                    public void onSuccess(int messageCount, int pageCount) {
+                        // 所有分页消息都已获取完成，现在执行数据库操作
                         executor.execute(() -> {
                             try {
                                 // 获取服务器消息ID集合
                                 Set<Long> serverMessageIds = new HashSet<>();
-                                for (MessagesListResponse.MessageData serverMessage : serverMessages) {
+                                for (MessagesListResponse.MessageData serverMessage : allMessages) {
                                     serverMessageIds.add(serverMessage.getId());
                                     
                                     // 插入或更新消息到本地数据库
@@ -223,14 +312,15 @@ public class QuestionRepository {
                                     }
                                 }
                                 
-                                Log.d(TAG, "Synced " + serverMessages.size() + " messages for question " + questionId);
+                                Log.d(TAG, "Question " + questionId + " sync completed: " + messageCount + 
+                                      " messages from " + pageCount + " pages saved to database");
                             } catch (Exception e) {
-                                Log.e(TAG, "Error syncing messages for question " + questionId, e);
+                                Log.e(TAG, "Error saving messages to database for question " + questionId, e);
                             } finally {
-                                // 数据库操作完成后，检查是否所有操作都已完成
-                                int dbCompleted = dbOperationCompletedCount.incrementAndGet();
-                                if (dbCompleted >= totalCount.get()) {
-                                    Log.d(TAG, "All messages synced and saved to database successfully");
+                                // 数据库操作完成后，检查是否所有问题都已完成
+                                int completed = completedCount.incrementAndGet();
+                                if (completed >= totalCount.get()) {
+                                    Log.d(TAG, "All questions' messages synced successfully");
                                     if (callback != null) {
                                         callback.onSuccess(questions.size());
                                         callback.onPageLoaded(hasMore);
@@ -238,37 +328,24 @@ public class QuestionRepository {
                                 }
                             }
                         });
-                    } else {
-                        // API响应失败，但仍需要计数
-                        int dbCompleted = dbOperationCompletedCount.incrementAndGet();
-                        if (dbCompleted >= totalCount.get()) {
-                            Log.d(TAG, "All messages processing completed");
+                    }
+                    
+                    @Override
+                    public void onError(String errorMessage) {
+                        Log.e(TAG, "Failed to sync messages for question " + questionId + ": " + errorMessage);
+                        
+                        // 即使某个问题的消息同步失败，继续处理其他问题
+                        int completed = completedCount.incrementAndGet();
+                        if (completed >= totalCount.get()) {
+                            Log.d(TAG, "All questions processed (some may have failed)");
                             if (callback != null) {
                                 callback.onSuccess(questions.size());
                                 callback.onPageLoaded(hasMore);
                             }
                         }
                     }
-                    
-                    // 标记API请求完成
-                    completedCount.incrementAndGet();
                 }
-                
-                @Override
-                public void onFailure(Call<MessagesListResponse> call, Throwable t) {
-                    Log.e(TAG, "Failed to sync messages for question " + questionId, t);
-                    
-                    // 即使某个问题的消息同步失败，继续处理其他问题
-                    int completed = completedCount.incrementAndGet();
-                    int dbCompleted = dbOperationCompletedCount.incrementAndGet();
-                    if (dbCompleted >= totalCount.get()) {
-                        if (callback != null) {
-                            callback.onSuccess(questions.size());
-                            callback.onPageLoaded(hasMore);
-                        }
-                    }
-                }
-            });
+            );
         }
     }
     

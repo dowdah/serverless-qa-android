@@ -83,7 +83,7 @@ public class RetryHelper {
     }
     
     public RetryHelper(Config config) {
-        this.handler = new Handler(Looper.getMainLooper());
+        this.handler = new Handler(Looper.getMainLooper(), null);
         this.maxRetries = config.maxRetries;
         this.initialDelay = config.initialDelay;
         this.backoffMultiplier = config.backoffMultiplier;

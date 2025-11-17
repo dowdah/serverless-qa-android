@@ -39,7 +39,7 @@ public class WebSocketClient {
         this.client = client;
         this.url = url;
         this.callback = callback;
-        this.handler = new Handler(Looper.getMainLooper());
+        this.handler = new Handler(Looper.getMainLooper(), null);
         
         // 心跳机制：定期发送ping保持连接活跃
         this.heartbeatRunnable = new Runnable() {

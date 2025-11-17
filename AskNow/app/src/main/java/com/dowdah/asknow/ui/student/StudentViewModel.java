@@ -181,7 +181,14 @@ public class StudentViewModel extends AndroidViewModel {
         String token = prefsManager.getToken();
         long userId = prefsManager.getUserId();
         
-        questionRepository.syncQuestionsFromServer(token, userId, "student", 1, 20, false, new QuestionRepository.SyncCallback() {
+        questionRepository.syncQuestionsFromServer(
+            token, 
+            userId, 
+            "student", 
+            com.dowdah.asknow.constants.AppConstants.DEFAULT_START_PAGE,
+            com.dowdah.asknow.constants.AppConstants.DEFAULT_QUESTIONS_PAGE_SIZE,
+            false, 
+            new QuestionRepository.SyncCallback() {
             @Override
             public void onSuccess(int syncedCount) {
                 isSyncing.postValue(false);
@@ -217,7 +224,14 @@ public class StudentViewModel extends AndroidViewModel {
         String token = prefsManager.getToken();
         long userId = prefsManager.getUserId();
         
-        questionRepository.syncQuestionsFromServer(token, userId, "student", currentPage, 20, true, new QuestionRepository.SyncCallback() {
+        questionRepository.syncQuestionsFromServer(
+            token, 
+            userId, 
+            "student", 
+            currentPage,
+            com.dowdah.asknow.constants.AppConstants.DEFAULT_QUESTIONS_PAGE_SIZE,
+            true, 
+            new QuestionRepository.SyncCallback() {
             @Override
             public void onSuccess(int syncedCount) {
                 isLoadingMore.postValue(false);
