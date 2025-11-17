@@ -8,6 +8,7 @@ import com.dowdah.asknow.data.repository.MessageRepository;
 import com.dowdah.asknow.data.repository.QuestionRepository;
 import com.dowdah.asknow.utils.SharedPreferencesManager;
 import com.dowdah.asknow.utils.WebSocketManager;
+import com.google.android.material.color.DynamicColors;
 
 import javax.inject.Inject;
 
@@ -42,6 +43,12 @@ public class AskNowApplication extends Application {
     public void onCreate() {
         super.onCreate();
         Log.d(TAG, "Application onCreate");
+        
+        // 启用Material You动态颜色（从系统壁纸提取）
+        // Android 12+ (API 31+) 支持，minSdk=33 已满足要求
+        // 应用颜色会自动跟随系统壁纸主题变化，同时支持明暗主题切换
+        DynamicColors.applyToActivitiesIfAvailable(this);
+        Log.d(TAG, "Dynamic Colors enabled - colors will follow system wallpaper");
         
         // Connect WebSocket if user is logged in
         if (prefsManager.isLoggedIn()) {

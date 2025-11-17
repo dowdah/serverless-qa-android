@@ -11,7 +11,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginStart="60dp"
-        app:cardBackgroundColor="@color/primaryColor"
+        app:cardBackgroundColor="?attr/colorPrimaryContainer"
         app:cardCornerRadius="12dp"
         app:cardElevation="2dp">
 
@@ -25,7 +25,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:padding="12dp"
-                android:textColor="@android:color/white"
+                android:textColor="?attr/colorOnPrimaryContainer"
                 android:textSize="16sp"
                 android:text="消息内容"
                 android:visibility="gone" />
