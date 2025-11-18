@@ -53,6 +53,7 @@ google-services.json
 
 *.md
 !README.md
+!docs/*.md
 
 ###############################################################
 # Android project (under AskNow/)
