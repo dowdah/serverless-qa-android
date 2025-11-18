@@ -88,6 +88,29 @@ public class MessageRepository {
     }
     
     /**
+     * 检查线程池是否可用
+     * 
+     * 防止在线程池关闭后提交任务导致 RejectedExecutionException
+     * 
+     * @return true 如果线程池可用，false 否则
+     */
+    private boolean isExecutorAvailable() {
+        if (executor == null) {
+            Log.e(TAG, "Executor is null");
+            return false;
+        }
+        if (executor.isShutdown()) {
+            Log.e(TAG, "Executor is shutdown");
+            return false;
+        }
+        if (executor.isTerminated()) {
+            Log.e(TAG, "Executor is terminated");
+            return false;
+        }
+        return true;
+    }
+    
+    /**
      * 通过WebSocket发送消息。如果离线，保存到数据库待后续发送
      * 
      * @param messageType 消息类型
@@ -121,17 +144,27 @@ public class MessageRepository {
      * @param messageId 消息ID
      */
     private void savePendingMessage(String messageType, WebSocketMessage message, String messageId) {
+        // 检查线程池是否可用
+        if (!isExecutorAvailable()) {
+            Log.e(TAG, "Cannot save pending message: executor not available");
+            return;
+        }
+        
         executor.execute(() -> {
-            String payload = gson.toJson(message);
-            PendingMessageEntity entity = new PendingMessageEntity(
-                messageType,
-                payload,
-                0,
-                System.currentTimeMillis(),
-                messageId
-            );
-            pendingMessageDao.insert(entity);
-            Log.d(TAG, "Pending message saved to database");
+            try {
+                String payload = gson.toJson(message);
+                PendingMessageEntity entity = new PendingMessageEntity(
+                    messageType,
+                    payload,
+                    0,
+                    System.currentTimeMillis(),
+                    messageId
+                );
+                pendingMessageDao.insert(entity);
+                Log.d(TAG, "Pending message saved to database");
+            } catch (Exception e) {
+                Log.e(TAG, "Error saving pending message", e);
+            }
         });
     }
     
@@ -147,31 +180,41 @@ public class MessageRepository {
      * 发送数据库中所有待发送消息
      */
     private void sendPendingMessages() {
+        // 检查线程池是否可用（这是崩溃的关键位置）
+        if (!isExecutorAvailable()) {
+            Log.e(TAG, "Cannot send pending messages: executor not available");
+            return;
+        }
+        
         executor.execute(() -> {
-            List<PendingMessageEntity> pendingMessages = pendingMessageDao.getAllPendingMessages();
-            Log.d(TAG, "Found " + pendingMessages.size() + " pending messages");
-            
-            for (PendingMessageEntity entity : pendingMessages) {
-                if (entity.getRetryCount() >= MAX_RETRY_COUNT) {
-                    Log.w(TAG, "Message exceeded max retries, removing: " + entity.getMessageId());
-                    pendingMessageDao.deleteMessage(entity.getId());
-                    continue;
-                }
+            try {
+                List<PendingMessageEntity> pendingMessages = pendingMessageDao.getAllPendingMessages();
+                Log.d(TAG, "Found " + pendingMessages.size() + " pending messages");
                 
-                try {
-                    WebSocketMessage message = gson.fromJson(entity.getPayload(), WebSocketMessage.class);
-                    if (webSocketClient != null && webSocketClient.isConnected()) {
-                        webSocketClient.sendMessage(message);
-                        Log.d(TAG, "Pending message sent: " + entity.getMessageId());
-                        // Don't delete yet, wait for ACK from server
-                    } else {
-                        Log.w(TAG, "WebSocket disconnected during sending");
-                        break;
+                for (PendingMessageEntity entity : pendingMessages) {
+                    if (entity.getRetryCount() >= MAX_RETRY_COUNT) {
+                        Log.w(TAG, "Message exceeded max retries, removing: " + entity.getMessageId());
+                        pendingMessageDao.deleteMessage(entity.getId());
+                        continue;
                     }
-                } catch (Exception e) {
-                    Log.e(TAG, "Error sending pending message", e);
-                    pendingMessageDao.updateRetryCount(entity.getId(), entity.getRetryCount() + 1);
+                    
+                    try {
+                        WebSocketMessage message = gson.fromJson(entity.getPayload(), WebSocketMessage.class);
+                        if (webSocketClient != null && webSocketClient.isConnected()) {
+                            webSocketClient.sendMessage(message);
+                            Log.d(TAG, "Pending message sent: " + entity.getMessageId());
+                            // Don't delete yet, wait for ACK from server
+                        } else {
+                            Log.w(TAG, "WebSocket disconnected during sending");
+                            break;
+                        }
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error sending pending message", e);
+                        pendingMessageDao.updateRetryCount(entity.getId(), entity.getRetryCount() + 1);
+                    }
                 }
+            } catch (Exception e) {
+                Log.e(TAG, "Error in sendPendingMessages", e);
             }
         });
     }
@@ -182,11 +225,21 @@ public class MessageRepository {
      * @param messageId 消息ID
      */
     public void onMessageAcknowledged(@NonNull String messageId) {
+        // 检查线程池是否可用
+        if (!isExecutorAvailable()) {
+            Log.e(TAG, "Cannot acknowledge message: executor not available");
+            return;
+        }
+        
         executor.execute(() -> {
-            PendingMessageEntity entity = pendingMessageDao.getMessageByMessageId(messageId);
-            if (entity != null) {
-                pendingMessageDao.deleteMessage(entity.getId());
-                Log.d(TAG, "Pending message acknowledged and removed: " + messageId);
+            try {
+                PendingMessageEntity entity = pendingMessageDao.getMessageByMessageId(messageId);
+                if (entity != null) {
+                    pendingMessageDao.deleteMessage(entity.getId());
+                    Log.d(TAG, "Pending message acknowledged and removed: " + messageId);
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error acknowledging message", e);
             }
         });
     }
@@ -293,6 +346,15 @@ public class MessageRepository {
      * @param callback 回调接口
      */
     public void getUnreadMessageCountAsync(long questionId, long currentUserId, @Nullable UnreadCountCallback callback) {
+        // 检查线程池是否可用
+        if (!isExecutorAvailable()) {
+            Log.e(TAG, "Cannot get unread count: executor not available");
+            if (callback != null) {
+                callback.onError("线程池不可用，无法获取未读消息数量");
+            }
+            return;
+        }
+        
         executor.execute(() -> {
             try {
                 int count = messageDao.getUnreadMessageCount(questionId, currentUserId);
@@ -325,6 +387,15 @@ public class MessageRepository {
      * @param callback 回调接口
      */
     public void markMessagesAsRead(@NonNull String token, long questionId, long currentUserId, @Nullable MarkReadCallback callback) {
+        // 检查线程池是否可用
+        if (!isExecutorAvailable()) {
+            Log.e(TAG, "Cannot mark messages as read: executor not available");
+            if (callback != null) {
+                callback.onError("线程池不可用，无法标记消息为已读");
+            }
+            return;
+        }
+        
         executor.execute(() -> {
             try {
                 // 先更新本地数据库
@@ -400,6 +471,15 @@ public class MessageRepository {
     }
     
     private void markMessagesAsReadWithRetry(String token, long questionId, long currentUserId, MarkReadCallback callback, int retryCount) {
+        // 检查线程池是否可用
+        if (!isExecutorAvailable()) {
+            Log.e(TAG, "Cannot mark messages as read with retry: executor not available");
+            if (callback != null) {
+                callback.onError("线程池不可用，无法标记消息为已读");
+            }
+            return;
+        }
+        
         executor.execute(() -> {
             try {
                 // 先更新本地数据库

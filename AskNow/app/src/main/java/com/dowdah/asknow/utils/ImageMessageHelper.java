@@ -36,6 +36,13 @@ public class ImageMessageHelper {
     private final ChatViewModel chatViewModel;
     private final long questionId;
     
+    /**
+     * 检查Activity是否处于有效状态
+     */
+    private boolean isActivityValid() {
+        return activity != null && !activity.isFinishing() && !activity.isDestroyed();
+    }
+    
     public ImageMessageHelper(
         Activity activity,
         ApiService apiService,
@@ -62,13 +69,20 @@ public class ImageMessageHelper {
      * 上传图片并发送消息
      */
     public void uploadAndSendImage(Uri imageUri) {
+        // 检查Activity状态
+        if (!isActivityValid()) {
+            return;
+        }
+        
         File file = new File(activity.getCacheDir(), "temp_message_image.jpg");
         
         try (InputStream inputStream = activity.getContentResolver().openInputStream(imageUri);
              FileOutputStream outputStream = new FileOutputStream(file)) {
             
             if (inputStream == null) {
-                Toast.makeText(activity, R.string.error_reading_image, Toast.LENGTH_SHORT).show();
+                if (isActivityValid()) {
+                    Toast.makeText(activity, R.string.error_reading_image, Toast.LENGTH_SHORT).show();
+                }
                 return;
             }
             
@@ -96,9 +110,12 @@ public class ImageMessageHelper {
                         // 发送图片消息
                         chatViewModel.sendImageMessage(questionId, imagePath);
                     } else {
-                        String errorMsg = response.body() != null && response.body().getMessage() != null ?
-                            response.body().getMessage() : activity.getString(R.string.failed_to_upload_image);
-                        Toast.makeText(activity, errorMsg, Toast.LENGTH_LONG).show();
+                        // 检查Activity是否有效后再显示Toast
+                        if (isActivityValid()) {
+                            String errorMsg = response.body() != null && response.body().getMessage() != null ?
+                                response.body().getMessage() : activity.getString(R.string.failed_to_upload_image);
+                            Toast.makeText(activity, errorMsg, Toast.LENGTH_LONG).show();
+                        }
                     }
                 }
                 
@@ -109,18 +126,24 @@ public class ImageMessageHelper {
                         file.delete();
                     }
                     
-                    String errorMsg = t.getMessage() != null ? 
-                        activity.getString(R.string.upload_error, t.getMessage()) : 
-                        activity.getString(R.string.failed_to_upload_image);
-                    Toast.makeText(activity, errorMsg, Toast.LENGTH_LONG).show();
+                    // 检查Activity是否有效后再显示Toast
+                    if (isActivityValid()) {
+                        String errorMsg = t.getMessage() != null ? 
+                            activity.getString(R.string.upload_error, t.getMessage()) : 
+                            activity.getString(R.string.failed_to_upload_image);
+                        Toast.makeText(activity, errorMsg, Toast.LENGTH_LONG).show();
+                    }
                 }
             });
             
         } catch (Exception e) {
-            String errorMsg = e.getMessage() != null ? 
-                activity.getString(R.string.error_message, e.getMessage()) : 
-                activity.getString(R.string.error_reading_image);
-            Toast.makeText(activity, errorMsg, Toast.LENGTH_LONG).show();
+            // 检查Activity是否有效后再显示Toast
+            if (isActivityValid()) {
+                String errorMsg = e.getMessage() != null ? 
+                    activity.getString(R.string.error_message, e.getMessage()) : 
+                    activity.getString(R.string.error_reading_image);
+                Toast.makeText(activity, errorMsg, Toast.LENGTH_LONG).show();
+            }
             
             // 清理临时文件
             if (file.exists()) {

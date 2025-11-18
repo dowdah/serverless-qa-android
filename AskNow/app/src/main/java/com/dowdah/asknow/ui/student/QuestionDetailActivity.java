@@ -171,6 +171,11 @@ public class QuestionDetailActivity extends AppCompatActivity {
                             );
                             
                             runOnUiThread(() -> {
+                                // 防止Activity销毁后访问binding
+                                if (binding == null || isFinishing() || isDestroyed()) {
+                                    return;
+                                }
+                                
                                 if (imagePaths != null && !imagePaths.isEmpty()) {
                                     ImageDisplayAdapter imageAdapter = new ImageDisplayAdapter();
                                     LinearLayoutManager layoutManager = new LinearLayoutManager(
@@ -195,7 +200,12 @@ public class QuestionDetailActivity extends AppCompatActivity {
                                 }
                             });
                         } catch (Exception e) {
-                            runOnUiThread(() -> binding.rvQuestionImages.setVisibility(View.GONE));
+                            runOnUiThread(() -> {
+                                // 防止Activity销毁后访问binding
+                                if (binding != null && !isFinishing() && !isDestroyed()) {
+                                    binding.rvQuestionImages.setVisibility(View.GONE);
+                                }
+                            });
                         }
                     });
                 } else {
@@ -353,7 +363,10 @@ public class QuestionDetailActivity extends AppCompatActivity {
                 int unreadCount = messageDao.getUnreadMessageCount(questionId, currentUserId);
                 if (unreadCount > 0) {
                     runOnUiThread(() -> {
-                        chatViewModel.markMessagesAsRead(questionId);
+                        // 防止Activity销毁后执行操作
+                        if (!isFinishing() && !isDestroyed()) {
+                            chatViewModel.markMessagesAsRead(questionId);
+                        }
                     });
                 }
             });

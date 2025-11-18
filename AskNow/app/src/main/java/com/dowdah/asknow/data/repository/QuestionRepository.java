@@ -58,6 +58,29 @@ public class QuestionRepository {
     }
     
     /**
+     * 检查线程池是否可用
+     * 
+     * 防止在线程池关闭后提交任务导致 RejectedExecutionException
+     * 
+     * @return true 如果线程池可用，false 否则
+     */
+    private boolean isExecutorAvailable() {
+        if (executor == null) {
+            Log.e(TAG, "Executor is null");
+            return false;
+        }
+        if (executor.isShutdown()) {
+            Log.e(TAG, "Executor is shutdown");
+            return false;
+        }
+        if (executor.isTerminated()) {
+            Log.e(TAG, "Executor is terminated");
+            return false;
+        }
+        return true;
+    }
+    
+    /**
      * 同步问题从服务器到本地
      * 对于学生：同步自己提出的问题
      * 对于老师：同步自己接取或已完结的问题
@@ -101,6 +124,15 @@ public class QuestionRepository {
                     List<QuestionsListResponse.QuestionData> serverQuestions = response.body().getQuestions();
                     com.dowdah.asknow.data.model.Pagination pagination = response.body().getPagination();
                     boolean hasMore = pagination != null && pagination.hasMore();
+                    
+                    // 检查线程池是否可用（这是崩溃的关键位置之一）
+                    if (!isExecutorAvailable()) {
+                        Log.e(TAG, "Cannot process sync response: executor not available");
+                        if (callback != null) {
+                            callback.onError("线程池不可用，无法完成同步");
+                        }
+                        return;
+                    }
                     
                     executor.execute(() -> {
                         try {
@@ -294,6 +326,20 @@ public class QuestionRepository {
                 new OnSingleQuestionMessagesSyncedCallback() {
                     @Override
                     public void onSuccess(int messageCount, int pageCount) {
+                        // 检查线程池是否可用
+                        if (!isExecutorAvailable()) {
+                            Log.e(TAG, "Cannot process messages sync: executor not available");
+                            // 继续处理其他问题
+                            int completed = completedCount.incrementAndGet();
+                            if (completed >= totalCount.get()) {
+                                if (callback != null) {
+                                    callback.onSuccess(questions.size());
+                                    callback.onPageLoaded(hasMore);
+                                }
+                            }
+                            return;
+                        }
+                        
                         // 所有分页消息都已获取完成，现在执行数据库操作
                         executor.execute(() -> {
                             try {

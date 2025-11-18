@@ -26,6 +26,7 @@ public class WebSocketClient {
     private final WebSocketCallback callback;
     private int retryCount = 0;
     private boolean isManuallyDisconnected = false;
+    private Thread reconnectThread;
     
     /**
      * WebSocket回调接口
@@ -128,6 +129,14 @@ public class WebSocketClient {
     
     public void disconnect() {
         isManuallyDisconnected = true;
+        
+        // 中断待处理的重连线程
+        if (reconnectThread != null && reconnectThread.isAlive()) {
+            reconnectThread.interrupt();
+            reconnectThread = null;
+            Log.d(TAG, "Reconnect thread interrupted");
+        }
+        
         if (webSocket != null) {
             webSocket.close(com.dowdah.asknow.constants.AppConstants.WEBSOCKET_NORMAL_CLOSURE_CODE, "Manual disconnect");
             webSocket = null;
@@ -157,23 +166,29 @@ public class WebSocketClient {
             return;
         }
         
+        // 取消之前的重连线程（如果存在）
+        if (reconnectThread != null && reconnectThread.isAlive()) {
+            reconnectThread.interrupt();
+        }
+        
         int delay = BACKOFF_DELAYS[Math.min(retryCount, BACKOFF_DELAYS.length - 1)];
         Log.d(TAG, "Reconnecting in " + delay + "ms (attempt " + (retryCount + 1) + "/" + MAX_RETRY_COUNT + ")");
         
         retryCount++;
         
         // 使用新线程处理延迟重连，避免阻塞 WebSocket 回调线程
-        new Thread(() -> {
+        reconnectThread = new Thread(() -> {
             try {
                 Thread.sleep(delay);
                 if (!isManuallyDisconnected) {
                     connect();
                 }
             } catch (InterruptedException e) {
-                Log.w(TAG, "Reconnect delay interrupted", e);
+                Log.d(TAG, "Reconnect cancelled due to interrupt");
                 Thread.currentThread().interrupt();
             }
-        }).start();
+        });
+        reconnectThread.start();
     }
     
     /**

@@ -15,6 +15,8 @@ import com.dowdah.asknow.data.local.entity.MessageEntity;
 import com.dowdah.asknow.data.local.entity.QuestionEntity;
 import com.dowdah.asknow.data.model.WebSocketMessage;
 import com.dowdah.asknow.data.repository.MessageRepository;
+import com.google.gson.Gson;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
 import java.util.concurrent.ExecutorService;
@@ -42,6 +44,9 @@ public class WebSocketManager {
     private final MutableLiveData<String> errorMessage = new MutableLiveData<>();
     private final MutableLiveData<WebSocketMessage> incomingMessage = new MutableLiveData<>();
     private final MutableLiveData<Long> newMessageReceived = new MutableLiveData<>();  // 通知新消息到达，值为 questionId
+    
+    // 标记应用是否在前台，用于控制 WebSocket 连接行为
+    private volatile boolean isAppInForeground = true;
     
     @Inject
     public WebSocketManager(
@@ -73,6 +78,12 @@ public class WebSocketManager {
     }
     
     public void connect() {
+        // 检查应用是否在前台，后台时不进行连接
+        if (!isAppInForeground) {
+            Log.d(TAG, "App in background, skipping WebSocket connection");
+            return;
+        }
+        
         // 严格清理旧实例，防止多个 WebSocket 同时运行
         if (webSocketClient != null) {
             if (webSocketClient.isConnected()) {
@@ -250,6 +261,15 @@ public class WebSocketManager {
         });
     }
     
+    /**
+     * 处理问题更新消息（统一消息类型）
+     * 
+     * 注意：只更新问题的状态相关字段，保留 imagePaths 字段不被覆盖
+     * 这是为了避免图片消失的问题，因为 WebSocket 消息中的 imagePath 字段
+     * 与数据库中的 imagePaths（JSON 数组）字段格式不一致
+     * 
+     * @param message WebSocket消息
+     */
     private void handleQuestionUpdated(WebSocketMessage message) {
         executor.execute(() -> {
             try {
@@ -269,47 +289,44 @@ public class WebSocketManager {
                     Log.w(TAG, "Question update missing questionId field");
                     return;
                 }
-                if (!data.has("userId") || data.get("userId").isJsonNull()) {
-                    Log.w(TAG, "Question update missing userId field");
-                    return;
-                }
-                if (!data.has("content") || data.get("content").isJsonNull()) {
-                    Log.w(TAG, "Question update missing content field");
-                    return;
-                }
                 if (!data.has("status") || data.get("status").isJsonNull()) {
                     Log.w(TAG, "Question update missing status field");
                     return;
                 }
                 
                 long questionId = data.get("questionId").getAsLong();
-                long userId = data.get("userId").getAsLong();
+                String status = data.get("status").getAsString();
                 Long tutorId = data.has("tutorId") && !data.get("tutorId").isJsonNull() 
                     ? data.get("tutorId").getAsLong() : null;
-                String content = data.get("content").getAsString();
-                String imagePath = data.has("imagePath") && !data.get("imagePath").isJsonNull() 
-                    ? data.get("imagePath").getAsString() : null;
-                String status = data.get("status").getAsString();
-                long createdAt = data.has("createdAt") && !data.get("createdAt").isJsonNull()
-                    ? data.get("createdAt").getAsLong() : System.currentTimeMillis();
                 long updatedAt = data.has("updatedAt") && !data.get("updatedAt").isJsonNull()
                     ? data.get("updatedAt").getAsLong() : System.currentTimeMillis();
                 
-                // 使用 INSERT OR REPLACE 策略确保 LiveData 被触发
-                QuestionEntity entity = new QuestionEntity(
-                    userId,
-                    tutorId,
-                    content,
-                    imagePath,
-                    status,
-                    createdAt,
-                    updatedAt
-                );
-                entity.setId(questionId);
-                // 使用 update 而不是 insert，避免触发外键级联删除导致消息丢失
-                questionDao.update(entity);
+                // 从数据库读取现有的问题实体
+                QuestionEntity question = questionDao.getQuestionById(questionId);
                 
-                Log.d(TAG, "Question updated from WebSocket: " + questionId + ", status: " + status);
+                if (question != null) {
+                    // 只更新状态相关字段，保留其他字段（特别是 imagePaths）
+                    question.setStatus(status);
+                    question.setUpdatedAt(updatedAt);
+                    
+                    // 如果消息中包含 tutorId，则更新
+                    if (tutorId != null) {
+                        question.setTutorId(tutorId);
+                    }
+                    
+                    // 如果消息中包含 content，则更新（可选，一般状态更新不会改变内容）
+                    if (data.has("content") && !data.get("content").isJsonNull()) {
+                        question.setContent(data.get("content").getAsString());
+                    }
+                    
+                    // 使用 update 而不是 insert，避免触发外键级联删除导致消息丢失
+                    questionDao.update(question);
+                    
+                    Log.d(TAG, "Question updated from WebSocket: " + questionId + ", status: " + status + 
+                          " (imagePaths preserved)");
+                } else {
+                    Log.w(TAG, "Question not found in database for update: " + questionId);
+                }
             } catch (Exception e) {
                 Log.e(TAG, "Error handling question updated", e);
             }
@@ -378,8 +395,19 @@ public class WebSocketManager {
                 long questionId = data.get("questionId").getAsLong();
                 long userId = data.get("userId").getAsLong();
                 String content = data.get("content").getAsString();
-                String imagePath = data.has("imagePath") && !data.get("imagePath").isJsonNull() 
-                    ? data.get("imagePath").getAsString() : null;
+                
+                // 正确提取 imagePaths 数组并转换为 JSON 字符串
+                // WebSocket 消息中的 imagePaths 字段为 JSON 数组，需要转换为字符串存储到数据库
+                // 这与 QuestionRepository 中从 REST API 获取数据的处理方式保持一致
+                String imagePathsJson = null;
+                if (data.has("imagePaths") && !data.get("imagePaths").isJsonNull()) {
+                    JsonArray imagePathsArray = data.get("imagePaths").getAsJsonArray();
+                    if (imagePathsArray.size() > 0) {
+                        // 将 JsonArray 转换为 JSON 字符串存储
+                        imagePathsJson = new Gson().toJson(imagePathsArray);
+                    }
+                }
+                
                 String status = data.get("status").getAsString();
                 long createdAt = data.get("createdAt").getAsLong();
                 
@@ -387,7 +415,7 @@ public class WebSocketManager {
                     userId,
                     null,
                     content,
-                    imagePath,
+                    imagePathsJson,
                     status,
                     createdAt,
                     createdAt
@@ -395,7 +423,8 @@ public class WebSocketManager {
                 entity.setId(questionId);
                 questionDao.insert(entity);
                 
-                Log.d(TAG, "Question saved from WebSocket");
+                Log.d(TAG, "Question saved from WebSocket" + 
+                    (imagePathsJson != null ? " with images" : ""));
             } catch (Exception e) {
                 Log.e(TAG, "Error handling new question", e);
             }
@@ -426,12 +455,47 @@ public class WebSocketManager {
         }
     }
     
+    /**
+     * 应用进入后台时调用
+     * 停止 WebSocket 连接并阻止自动重连，节省电池和网络资源
+     */
+    public void onAppBackground() {
+        Log.d(TAG, "App entering background - disabling WebSocket reconnection");
+        isAppInForeground = false;
+        disconnect();
+    }
+    
+    /**
+     * 应用返回前台时调用
+     * 允许 WebSocket 重新连接
+     */
+    public void onAppForeground() {
+        Log.d(TAG, "App entering foreground - enabling WebSocket reconnection");
+        isAppInForeground = true;
+        
+        // 如果用户已登录，自动重连 WebSocket
+        if (prefsManager != null && prefsManager.isLoggedIn()) {
+            connect();
+        }
+    }
+    
+    /**
+     * 清理WebSocketManager资源
+     * 
+     * 注意：不关闭executor，因为它是应用级共享的单例ExecutorService
+     * 如果关闭会影响其他使用该executor的组件（如MessageRepository、QuestionRepository）
+     * 导致后续操作抛出RejectedExecutionException
+     * 
+     * 只负责：
+     * - 断开WebSocket连接
+     * - 清理WebSocket相关资源
+     */
     public void cleanup() {
         disconnect();
-        if (executor != null && !executor.isShutdown()) {
-            executor.shutdown();
-            Log.d(TAG, "Executor shutdown");
-        }
+        // 注意：不关闭executor，因为它是通过Dagger注入的应用级单例
+        // 由ExecutorModule提供，在整个应用生命周期中保持运行
+        // 只有在应用真正被终止时才应该关闭（由系统管理）
+        Log.d(TAG, "WebSocketManager cleanup completed (executor preserved for app lifecycle)");
     }
 }
 
