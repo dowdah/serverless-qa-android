@@ -10,39 +10,38 @@ import android.util.Log;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
-import com.dowdah.asknow.data.api.WebSocketClient;
-import com.dowdah.asknow.data.local.dao.PendingMessageDao;
-import com.dowdah.asknow.data.local.entity.PendingMessageEntity;
-import com.dowdah.asknow.data.model.WebSocketMessage;
 import com.dowdah.asknow.utils.ErrorHandler;
-import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 
-import java.util.List;
-import java.util.UUID;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 import javax.inject.Inject;
 import javax.inject.Singleton;
 
 import dagger.hilt.android.qualifiers.ApplicationContext;
 
+/**
+ * 消息仓库
+ * 
+ * 负责消息相关的数据操作，包括：
+ * - 标记消息为已读（本地数据库 + 服务器同步）
+ * - 获取未读消息数量
+ * - 监控网络状态
+ * 
+ * 注意：消息发送通过 HTTP API 在 ChatViewModel 中处理，不在此类中
+ */
 @Singleton
 public class MessageRepository {
     private static final String TAG = "MessageRepository";
-    // 使用 AppConstants 替代硬编码值
+    // 重试相关常量（用于标记已读功能）
     private static final int MAX_RETRY_COUNT = com.dowdah.asknow.constants.AppConstants.MAX_RETRY_COUNT;
     private static final long INITIAL_RETRY_DELAY = com.dowdah.asknow.constants.AppConstants.INITIAL_RETRY_DELAY_MS;
     private static final int RETRY_BACKOFF_MULTIPLIER = com.dowdah.asknow.constants.AppConstants.RETRY_BACKOFF_MULTIPLIER;
     
-    private final PendingMessageDao pendingMessageDao;
     private final com.dowdah.asknow.data.local.dao.MessageDao messageDao;
     private final com.dowdah.asknow.data.api.ApiService apiService;
     private final Context context;
     private final ExecutorService executor;
-    private final Gson gson;
-    private WebSocketClient webSocketClient;
     private boolean isNetworkAvailable = false;
     private ConnectivityManager.NetworkCallback networkCallback;
     private NetworkAvailableListener networkAvailableListener;
@@ -57,25 +56,17 @@ public class MessageRepository {
     @Inject
     public MessageRepository(
         @NonNull @ApplicationContext Context context, 
-        @NonNull PendingMessageDao pendingMessageDao,
         @NonNull com.dowdah.asknow.data.local.dao.MessageDao messageDao,
         @NonNull com.dowdah.asknow.data.api.ApiService apiService,
-        @NonNull @javax.inject.Named("single") ExecutorService executor,
-        @NonNull Gson gson
+        @NonNull @javax.inject.Named("single") ExecutorService executor
     ) {
         this.context = context;
-        this.pendingMessageDao = pendingMessageDao;
         this.messageDao = messageDao;
         this.apiService = apiService;
         this.executor = executor;
-        this.gson = gson;
         
         registerNetworkCallback();
         checkNetworkStatus();
-    }
-    
-    public void setWebSocketClient(@Nullable WebSocketClient client) {
-        this.webSocketClient = client;
     }
     
     /**
@@ -108,140 +99,6 @@ public class MessageRepository {
             return false;
         }
         return true;
-    }
-    
-    /**
-     * 通过WebSocket发送消息。如果离线，保存到数据库待后续发送
-     * 
-     * @param messageType 消息类型
-     * @param data 消息数据
-     */
-    public void sendMessage(@NonNull String messageType, @NonNull JsonObject data) {
-        String messageId = UUID.randomUUID().toString();
-        WebSocketMessage message = new WebSocketMessage(
-            messageType,
-            data,
-            String.valueOf(System.currentTimeMillis()),
-            messageId
-        );
-        
-        if (webSocketClient != null && webSocketClient.isConnected()) {
-            // Send directly if connected
-            webSocketClient.sendMessage(message);
-            Log.d(TAG, "Message sent directly: " + messageId);
-        } else {
-            // Save to database if offline
-            savePendingMessage(messageType, message, messageId);
-            Log.d(TAG, "Message saved for later: " + messageId);
-        }
-    }
-    
-    /**
-     * 保存待发送消息到数据库（用于离线发送）
-     * 
-     * @param messageType 消息类型
-     * @param message 消息对象
-     * @param messageId 消息ID
-     */
-    private void savePendingMessage(String messageType, WebSocketMessage message, String messageId) {
-        // 检查线程池是否可用
-        if (!isExecutorAvailable()) {
-            Log.e(TAG, "Cannot save pending message: executor not available");
-            return;
-        }
-        
-        executor.execute(() -> {
-            try {
-                String payload = gson.toJson(message);
-                PendingMessageEntity entity = new PendingMessageEntity(
-                    messageType,
-                    payload,
-                    0,
-                    System.currentTimeMillis(),
-                    messageId
-                );
-                pendingMessageDao.insert(entity);
-                Log.d(TAG, "Pending message saved to database");
-            } catch (Exception e) {
-                Log.e(TAG, "Error saving pending message", e);
-            }
-        });
-    }
-    
-    /**
-     * WebSocket连接建立时调用
-     */
-    public void onWebSocketConnected() {
-        Log.d(TAG, "WebSocket connected, sending pending messages");
-        sendPendingMessages();
-    }
-    
-    /**
-     * 发送数据库中所有待发送消息
-     */
-    private void sendPendingMessages() {
-        // 检查线程池是否可用（这是崩溃的关键位置）
-        if (!isExecutorAvailable()) {
-            Log.e(TAG, "Cannot send pending messages: executor not available");
-            return;
-        }
-        
-        executor.execute(() -> {
-            try {
-                List<PendingMessageEntity> pendingMessages = pendingMessageDao.getAllPendingMessages();
-                Log.d(TAG, "Found " + pendingMessages.size() + " pending messages");
-                
-                for (PendingMessageEntity entity : pendingMessages) {
-                    if (entity.getRetryCount() >= MAX_RETRY_COUNT) {
-                        Log.w(TAG, "Message exceeded max retries, removing: " + entity.getMessageId());
-                        pendingMessageDao.deleteMessage(entity.getId());
-                        continue;
-                    }
-                    
-                    try {
-                        WebSocketMessage message = gson.fromJson(entity.getPayload(), WebSocketMessage.class);
-                        if (webSocketClient != null && webSocketClient.isConnected()) {
-                            webSocketClient.sendMessage(message);
-                            Log.d(TAG, "Pending message sent: " + entity.getMessageId());
-                            // Don't delete yet, wait for ACK from server
-                        } else {
-                            Log.w(TAG, "WebSocket disconnected during sending");
-                            break;
-                        }
-                    } catch (Exception e) {
-                        Log.e(TAG, "Error sending pending message", e);
-                        pendingMessageDao.updateRetryCount(entity.getId(), entity.getRetryCount() + 1);
-                    }
-                }
-            } catch (Exception e) {
-                Log.e(TAG, "Error in sendPendingMessages", e);
-            }
-        });
-    }
-    
-    /**
-     * 收到服务器ACK确认时调用
-     * 
-     * @param messageId 消息ID
-     */
-    public void onMessageAcknowledged(@NonNull String messageId) {
-        // 检查线程池是否可用
-        if (!isExecutorAvailable()) {
-            Log.e(TAG, "Cannot acknowledge message: executor not available");
-            return;
-        }
-        
-        executor.execute(() -> {
-            try {
-                PendingMessageEntity entity = pendingMessageDao.getMessageByMessageId(messageId);
-                if (entity != null) {
-                    pendingMessageDao.deleteMessage(entity.getId());
-                    Log.d(TAG, "Pending message acknowledged and removed: " + messageId);
-                }
-            } catch (Exception e) {
-                Log.e(TAG, "Error acknowledging message", e);
-            }
-        });
     }
     
     /**
@@ -309,20 +166,6 @@ public class MessageRepository {
     
     public boolean isNetworkAvailable() {
         return isNetworkAvailable;
-    }
-    
-    /**
-     * 获取待发送消息数量
-     * 
-     * @return 待发送消息数量
-     */
-    public int getPendingMessageCount() {
-        try {
-            return pendingMessageDao.getAllPendingMessages().size();
-        } catch (Exception e) {
-            Log.e(TAG, "Error getting pending message count", e);
-            return 0;
-        }
     }
     
     /**

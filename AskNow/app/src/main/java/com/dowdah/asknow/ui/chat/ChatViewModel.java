@@ -225,14 +225,14 @@ public class ChatViewModel extends BaseViewModel {
                     messageSent.postValue(true);
                 } else {
                     // 4. 标记失败（使用锁保护）
-                    handleMessageSendFailure(tempId, "Server error: " + response.code());
+                    handleMessageSendFailure(tempId, "Server error: " + response.code(), true);
                 }
             }
             
             @Override
             public void onFailure(Call<MessageResponse> call, Throwable t) {
                 // 5. 标记失败（使用锁保护）
-                handleMessageSendFailure(tempId, "Network error: " + t.getMessage());
+                handleMessageSendFailure(tempId, "Network error: " + t.getMessage(), true);
             }
         });
     }
@@ -242,8 +242,9 @@ public class ChatViewModel extends BaseViewModel {
      * 
      * @param tempId 临时消息ID
      * @param errorMsg 错误信息
+     * @param clearInput 是否清空输入框
      */
-    private void handleMessageSendFailure(long tempId, String errorMsg) {
+    private void handleMessageSendFailure(long tempId, String errorMsg, boolean clearInput) {
         executeInBackground(() -> {
             synchronized (messageLock) {
                 messageDao.updateSendStatus(tempId, MessageStatus.FAILED);
@@ -251,7 +252,91 @@ public class ChatViewModel extends BaseViewModel {
             }
         });
         isSendingMessage = false;
+        
+        // 只有新消息发送失败时才清空文本框，重试失败不清空
+        if (clearInput) {
+            messageSent.postValue(true);
+        }
+        
         setError(getApplication().getString(R.string.failed_to_send_message));
+    }
+    
+    /**
+     * 重试发送失败的消息
+     * 
+     * @param failedMessageId 失败消息的ID
+     * @param content 消息内容
+     * @param messageType 消息类型
+     */
+    public void retryMessage(long failedMessageId, @NonNull String content, @NonNull String messageType) {
+        Log.d(TAG, "Retrying message id=" + failedMessageId);
+        
+        // 1. 首先获取消息所属的 questionId
+        executeInBackground(() -> {
+            MessageEntity message = messageDao.getMessageById(failedMessageId);
+            if (message == null) {
+                Log.e(TAG, "Cannot retry: message not found with id=" + failedMessageId);
+                return;
+            }
+            
+            long questionId = message.getQuestionId();
+            
+            // 2. 更新消息状态为 PENDING
+            synchronized (messageLock) {
+                messageDao.updateSendStatus(failedMessageId, MessageStatus.PENDING);
+                Log.d(TAG, "Retrying message: updated status to PENDING");
+            }
+            
+            // 3. 在主线程重新发送 HTTP 请求
+            new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+                String token = "Bearer " + prefsManager.getToken();
+                MessageRequest request = new MessageRequest(questionId, content, messageType);
+                
+                apiService.sendMessage(token, request).enqueue(new Callback<MessageResponse>() {
+                    @Override
+                    public void onResponse(Call<MessageResponse> call, Response<MessageResponse> response) {
+                        if (response.isSuccessful() && response.body() != null && response.body().isSuccess()) {
+                            // 成功：删除旧消息，插入新消息
+                            MessageResponse.MessageData data = response.body().getData();
+                            executeInBackground(() -> {
+                                synchronized (messageLock) {
+                                    messageDao.deleteById(failedMessageId);
+                                    
+                                    MessageEntity realEntity = new MessageEntity(
+                                        data.getQuestionId(),
+                                        data.getSenderId(),
+                                        data.getContent(),
+                                        data.getMessageType(),
+                                        data.getCreatedAt()
+                                    );
+                                    realEntity.setId(data.getId());
+                                    realEntity.setSendStatus(MessageStatus.SENT);
+                                    realEntity.setRead(true);
+                                    messageDao.insert(realEntity);
+                                    
+                                    Log.d(TAG, "Message retry successful: replaced id=" + failedMessageId + " with real id=" + data.getId());
+                                }
+                                
+                                // 更新问题的 updatedAt
+                                questionDao.updateUpdatedAt(questionId, data.getCreatedAt());
+                            });
+                            
+                            // 注意：重试成功不需要清空文本框，因为重试的是列表中已有的消息
+                            Log.d(TAG, "Message retry completed successfully");
+                        } else {
+                            // 失败：保持 FAILED 状态（不清空文本框）
+                            handleMessageSendFailure(failedMessageId, "Server error: " + response.code(), false);
+                        }
+                    }
+                    
+                    @Override
+                    public void onFailure(Call<MessageResponse> call, Throwable t) {
+                        // 失败：保持 FAILED 状态（不清空文本框）
+                        handleMessageSendFailure(failedMessageId, "Network error: " + t.getMessage(), false);
+                    }
+                });
+            });
+        });
     }
     
     /**

@@ -50,6 +50,9 @@
     <string name="failed_to_send_message">发送消息失败</string>
     <string name="failed_to_accept_question">接受问题失败</string>
     <string name="failed_to_close_question">关闭问题失败</string>
+    <string name="retry_send_message">重试发送消息</string>
+    <string name="message_sending">发送中...</string>
+    <string name="message_failed">发送失败</string>
     
     <!-- Status Messages -->
     <string name="connected_to_server">已连接到服务器</string>

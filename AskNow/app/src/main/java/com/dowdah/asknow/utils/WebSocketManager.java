@@ -111,7 +111,6 @@ public class WebSocketManager {
             public void onConnected() {
                 Log.d(TAG, "WebSocket connected");
                 isConnected.postValue(true);
-                messageRepository.onWebSocketConnected();
             }
             
             @Override
@@ -134,7 +133,6 @@ public class WebSocketManager {
             }
         });
         
-        messageRepository.setWebSocketClient(webSocketClient);
         webSocketClient.connect();
     }
     
@@ -155,10 +153,8 @@ public class WebSocketManager {
         String type = message.getType();
         
         if (WebSocketMessageType.ACK.equals(type)) {
-            String messageId = message.getMessageId();
-            if (messageId != null) {
-                messageRepository.onMessageAcknowledged(messageId);
-            }
+            // ACK 消息已由后端处理，客户端不需要额外处理
+            Log.d(TAG, "Received ACK: " + message.getMessageId());
         } else if (WebSocketMessageType.CHAT_MESSAGE.equals(type)) {
             handleChatMessage(message);
         } else if (WebSocketMessageType.QUESTION_UPDATED.equals(type)) {
@@ -445,14 +441,6 @@ public class WebSocketManager {
     
     public LiveData<Long> getNewMessageReceived() {
         return newMessageReceived;
-    }
-    
-    public void sendMessage(WebSocketMessage message) {
-        if (webSocketClient != null && webSocketClient.isConnected()) {
-            webSocketClient.sendMessage(message);
-        } else {
-            Log.w(TAG, "Cannot send message: WebSocket not connected");
-        }
     }
     
     /**

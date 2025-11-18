@@ -151,6 +151,11 @@ public class QuestionDetailActivity extends AppCompatActivity {
             imagePaths.add(imagePath);
             openImagePreview(imagePaths, 0);
         });
+        
+        // 设置消息重试监听器
+        messageAdapter.setMessageRetryListener((messageId, content, messageType) -> {
+            chatViewModel.retryMessage(messageId, content, messageType);
+        });
     }
     
     private void loadQuestionDetails() {

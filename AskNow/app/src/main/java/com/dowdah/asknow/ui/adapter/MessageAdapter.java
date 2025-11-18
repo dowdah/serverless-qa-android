@@ -1,5 +1,8 @@
 package com.dowdah.asknow.ui.adapter;
 
+import android.content.Context;
+import android.content.res.Resources;
+import android.util.TypedValue;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -12,11 +15,13 @@ import androidx.recyclerview.widget.DiffUtil;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.dowdah.asknow.R;
+import com.dowdah.asknow.constants.MessageStatus;
 import com.dowdah.asknow.constants.MessageType;
 import com.dowdah.asknow.data.local.entity.MessageEntity;
 import com.dowdah.asknow.databinding.ItemMessageReceivedBinding;
 import com.dowdah.asknow.databinding.ItemMessageSentBinding;
 import com.dowdah.asknow.utils.ImageBindingHelper;
+import com.google.android.material.color.MaterialColors;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -41,6 +46,22 @@ public class MessageAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         void onImageClick(@NonNull String imagePath);
     }
     
+    /**
+     * 消息重试监听器接口
+     */
+    public interface OnMessageRetryListener {
+        /**
+         * 当用户点击重试按钮时调用
+         * 
+         * @param messageId 消息ID
+         * @param content 消息内容
+         * @param messageType 消息类型
+         */
+        void onRetryMessage(long messageId, @NonNull String content, @NonNull String messageType);
+    }
+    
+    private OnMessageRetryListener messageRetryListener;
+    
     public MessageAdapter(long currentUserId) {
         this.currentUserId = currentUserId;
     }
@@ -52,6 +73,15 @@ public class MessageAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
      */
     public void setImageClickListener(@Nullable OnImageClickListener listener) {
         this.imageClickListener = listener;
+    }
+    
+    /**
+     * 设置消息重试监听器
+     * 
+     * @param listener 消息重试监听器
+     */
+    public void setMessageRetryListener(@Nullable OnMessageRetryListener listener) {
+        this.messageRetryListener = listener;
     }
     
     /**
@@ -194,7 +224,7 @@ public class MessageAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         } else {
             MessageEntity message = messages.get(position);
             if (holder instanceof SentMessageViewHolder) {
-                ((SentMessageViewHolder) holder).bind(message, imageClickListener);
+                ((SentMessageViewHolder) holder).bind(message, imageClickListener, messageRetryListener);
             } else if (holder instanceof ReceivedMessageViewHolder) {
                 ((ReceivedMessageViewHolder) holder).bind(message, imageClickListener);
             }
@@ -257,13 +287,79 @@ public class MessageAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
          * 
          * @param message 消息实体
          * @param imageClickListener 图片点击监听器
+         * @param retryListener 重试监听器
          */
-        void bind(@Nullable MessageEntity message, @Nullable OnImageClickListener imageClickListener) {
+        void bind(@Nullable MessageEntity message, 
+                  @Nullable OnImageClickListener imageClickListener,
+                  @Nullable OnMessageRetryListener retryListener) {
             if (message == null) {
                 return;
             }
             
+            // 绑定消息内容
             bindMessageContent(message, binding.ivMessageImage, binding.tvMessage, imageClickListener);
+            
+            // 处理发送状态
+            String status = message.getSendStatus();
+            Context context = binding.getRoot().getContext();
+            
+            if (MessageStatus.PENDING.equals(status)) {
+                // 显示加载指示器
+                binding.pbSending.setVisibility(View.VISIBLE);
+                binding.btnRetry.setVisibility(View.GONE);
+                // 正常边框
+                binding.cardMessage.setStrokeWidth(0);
+            } else if (MessageStatus.FAILED.equals(status)) {
+                // 显示重试按钮
+                binding.pbSending.setVisibility(View.GONE);
+                binding.btnRetry.setVisibility(View.VISIBLE);
+                
+                // 设置重试按钮点击事件
+                binding.btnRetry.setOnClickListener(v -> {
+                    if (retryListener != null) {
+                        retryListener.onRetryMessage(
+                            message.getId(),
+                            message.getContent(),
+                            message.getMessageType()
+                        );
+                    }
+                });
+                
+                // 设置红色边框
+                int strokeWidth = dpToPx(context, 2);
+                // 使用 TypedValue 获取主题的 colorError 属性
+                TypedValue typedValue = new TypedValue();
+                context.getTheme().resolveAttribute(
+                    android.R.attr.colorError, 
+                    typedValue, 
+                    true
+                );
+                int errorColor = typedValue.data;
+                binding.cardMessage.setStrokeWidth(strokeWidth);
+                binding.cardMessage.setStrokeColor(errorColor);
+            } else {
+                // SENT 状态：隐藏所有指示器
+                binding.pbSending.setVisibility(View.GONE);
+                binding.btnRetry.setVisibility(View.GONE);
+                // 正常边框
+                binding.cardMessage.setStrokeWidth(0);
+            }
+        }
+        
+        /**
+         * 将dp转换为px
+         * 
+         * @param context 上下文
+         * @param dp dp值
+         * @return px值
+         */
+        private static int dpToPx(@NonNull Context context, int dp) {
+            Resources resources = context.getResources();
+            return (int) TypedValue.applyDimension(
+                TypedValue.COMPLEX_UNIT_DIP,
+                dp,
+                resources.getDisplayMetrics()
+            );
         }
     }
     

@@ -7,13 +7,44 @@
     android:padding="8dp"
     android:gravity="end">
 
-    <com.google.android.material.card.MaterialCardView
+    <!-- 状态指示器容器（在消息卡片左侧） -->
+    <LinearLayout
+        android:id="@+id/ll_status_indicator"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginStart="60dp"
+        android:layout_gravity="center_vertical"
+        android:layout_marginEnd="4dp"
+        android:orientation="horizontal"
+        android:gravity="center">
+
+        <!-- 加载指示器（PENDING状态） -->
+        <ProgressBar
+            android:id="@+id/pb_sending"
+            android:layout_width="20dp"
+            android:layout_height="20dp"
+            android:visibility="gone" />
+
+        <!-- 失败重试按钮（FAILED状态） -->
+        <ImageButton
+            android:id="@+id/btn_retry"
+            android:layout_width="24dp"
+            android:layout_height="24dp"
+            android:src="@drawable/ic_message_failed"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/retry_send_message"
+            android:padding="2dp"
+            android:visibility="gone" />
+    </LinearLayout>
+
+    <com.google.android.material.card.MaterialCardView
+        android:id="@+id/card_message"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="0dp"
         app:cardBackgroundColor="?attr/colorPrimaryContainer"
         app:cardCornerRadius="12dp"
-        app:cardElevation="2dp">
+        app:cardElevation="2dp"
+        app:strokeWidth="0dp">
 
         <LinearLayout
             android:layout_width="wrap_content"

@@ -49,6 +49,9 @@
     <string name="failed_to_send_message">Failed to send message</string>
     <string name="failed_to_accept_question">Failed to accept question</string>
     <string name="failed_to_close_question">Failed to close question</string>
+    <string name="retry_send_message">Retry sending message</string>
+    <string name="message_sending">Sending...</string>
+    <string name="message_failed">Send failed</string>
     
     <!-- Validation Error Messages -->
     <string name="error_username_empty">Username cannot be empty</string>
