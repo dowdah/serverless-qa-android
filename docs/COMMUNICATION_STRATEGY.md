@@ -1153,5 +1153,5 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int):
 
 **文档版本**: v1.0  
 **最后更新**: 2024年11月  
-**维护者**: AskNow 开发团队
+**维护者**: dowdah
 
