@@ -21,7 +21,6 @@ import com.bumptech.glide.Glide;
 import com.dowdah.asknow.BuildConfig;
 import com.dowdah.asknow.R;
 import com.dowdah.asknow.constants.enums.QuestionStatus;
-import com.dowdah.asknow.data.api.ApiService;
 import com.dowdah.asknow.data.local.dao.MessageDao;
 import com.dowdah.asknow.data.local.dao.QuestionDao;
 import com.dowdah.asknow.data.local.entity.QuestionEntity;
@@ -30,7 +29,6 @@ import com.dowdah.asknow.ui.adapter.ImageDisplayAdapter;
 import com.dowdah.asknow.ui.adapter.MessageAdapter;
 import com.dowdah.asknow.ui.chat.ChatViewModel;
 import com.dowdah.asknow.ui.image.ImagePreviewActivity;
-import com.dowdah.asknow.utils.ImageMessageHelper;
 import com.dowdah.asknow.utils.SharedPreferencesManager;
 
 import java.util.ArrayList;
@@ -53,7 +51,6 @@ public class QuestionDetailActivity extends AppCompatActivity {
     private ExecutorService executor;
     private boolean isActivityInForeground = false;
     private boolean shouldScrollToBottom = false;
-    private ImageMessageHelper imageMessageHelper;
     
     @Inject
     QuestionDao questionDao;
@@ -64,9 +61,6 @@ public class QuestionDetailActivity extends AppCompatActivity {
     @Inject
     SharedPreferencesManager prefsManager;
     
-    @Inject
-    ApiService apiService;
-    
     /**
      * 图片选择结果处理
      */
@@ -76,7 +70,8 @@ public class QuestionDetailActivity extends AppCompatActivity {
             if (result.getResultCode() == Activity.RESULT_OK && result.getData() != null) {
                 Uri imageUri = result.getData().getData();
                 if (imageUri != null) {
-                    imageMessageHelper.uploadAndSendImage(imageUri);
+                    // 直接调用 ViewModel 上传图片（符合 MVVM 架构）
+                    chatViewModel.uploadAndSendImage(imageUri, questionId);
                 }
             }
         }
@@ -112,15 +107,6 @@ public class QuestionDetailActivity extends AppCompatActivity {
         currentUserId = prefsManager.getUserId();
         chatViewModel = new ViewModelProvider(this).get(ChatViewModel.class);
         executor = Executors.newSingleThreadExecutor();
-        
-        // 初始化图片消息助手
-        imageMessageHelper = new ImageMessageHelper(
-            this,
-            apiService,
-            prefsManager,
-            chatViewModel,
-            questionId
-        );
         
         setupToolbar();
         setupRecyclerView();
@@ -297,6 +283,16 @@ public class QuestionDetailActivity extends AppCompatActivity {
         chatViewModel.getMessageSent().observe(this, sent -> {
             if (sent != null && sent) {
                 binding.etMessage.setText("");
+            }
+        });
+        
+        chatViewModel.getUploadProgress().observe(this, progress -> {
+            if (progress != null) {
+                if (progress.isComplete()) {
+                    // 图片上传完成，消息将自动发送
+                } else if (progress.hasError()) {
+                    // 错误已在 errorMessage 中处理
+                }
             }
         });
     }

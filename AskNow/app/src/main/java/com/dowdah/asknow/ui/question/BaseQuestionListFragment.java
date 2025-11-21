@@ -30,7 +30,11 @@ import javax.inject.Named;
 /**
  * BaseQuestionListFragment - 问题列表 Fragment 的基类
  * 
- * 合并了 QuestionListFragment 和 PendingQuestionsFragment 的公共逻辑：
+ * 提供问题列表的公共逻辑，被以下 Fragment 继承：
+ * - QuestionListFragment (学生端)
+ * - QuestionListByStatusFragment (教师端)
+ * 
+ * 公共功能：
  * - RecyclerView 设置和优化
  * - 下拉刷新
  * - 滚动加载更多

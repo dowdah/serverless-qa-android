@@ -21,29 +21,15 @@ import androidx.recyclerview.widget.GridLayoutManager;
 import com.bumptech.glide.Glide;
 import com.dowdah.asknow.R;
 import com.dowdah.asknow.constants.AppConstants;
-import com.dowdah.asknow.data.api.ApiService;
-import com.dowdah.asknow.data.model.UploadResponse;
 import com.dowdah.asknow.databinding.ActivityPublishQuestionBinding;
 import com.dowdah.asknow.ui.adapter.ImageSelectionAdapter;
-import com.dowdah.asknow.utils.SharedPreferencesManager;
 import com.dowdah.asknow.utils.ValidationUtils;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 
-import javax.inject.Inject;
-
 import dagger.hilt.android.AndroidEntryPoint;
-import okhttp3.MediaType;
-import okhttp3.MultipartBody;
-import okhttp3.RequestBody;
-import retrofit2.Call;
-import retrofit2.Callback;
-import retrofit2.Response;
 
 @AndroidEntryPoint
 public class PublishQuestionActivity extends AppCompatActivity {
@@ -51,15 +37,8 @@ public class PublishQuestionActivity extends AppCompatActivity {
     private ActivityPublishQuestionBinding binding;
     private StudentViewModel viewModel;
     
-    @Inject
-    ApiService apiService;
-    
-    @Inject
-    SharedPreferencesManager prefsManager;
-    
     private static final int MAX_IMAGES = 9;
     private List<Uri> selectedImageUris = new ArrayList<>();
-    private List<String> uploadedImagePaths = new ArrayList<>();
     private ImageSelectionAdapter imagePreviewAdapter;
     
     private final ActivityResultLauncher<Intent> imagePickerLauncher = registerForActivityResult(
@@ -153,6 +132,27 @@ public class PublishQuestionActivity extends AppCompatActivity {
         viewModel.getErrorMessage().observe(this, error -> {
             if (error != null && !error.isEmpty()) {
                 Toast.makeText(this, error, Toast.LENGTH_LONG).show();
+                resetSubmitState();
+            }
+        });
+        
+        viewModel.getUploadProgress().observe(this, progress -> {
+            if (progress != null) {
+                if (progress.hasError()) {
+                    resetSubmitState();
+                } else if (progress.isComplete()) {
+                    // 上传完成，等待问题创建结果
+                }
+            }
+        });
+        
+        viewModel.getQuestionCreated().observe(this, created -> {
+            if (created != null && created) {
+                Toast.makeText(this, R.string.question_submitted, Toast.LENGTH_SHORT).show();
+                finish();
+            } else if (created != null) {
+                // 创建失败
+                resetSubmitState();
             }
         });
     }
@@ -212,95 +212,8 @@ public class PublishQuestionActivity extends AppCompatActivity {
         binding.btnSubmit.setEnabled(false);
         binding.progressBar.setVisibility(android.view.View.VISIBLE);
         
-        if (!selectedImageUris.isEmpty()) {
-            uploadImagesThenSubmit(content);
-        } else {
-            submitQuestionToServer(content, null);
-        }
-    }
-    
-    private void uploadImagesThenSubmit(String content) {
-        uploadedImagePaths.clear();
-        uploadNextImage(content, 0);
-    }
-    
-    private void uploadNextImage(String content, int index) {
-        if (index >= selectedImageUris.size()) {
-            // 所有图片上传完成，提交问题
-            submitQuestionToServer(content, uploadedImagePaths);
-            return;
-        }
-        
-        Uri imageUri = selectedImageUris.get(index);
-        File file = new File(getCacheDir(), "temp_image_" + index + ".jpg");
-        
-        try (InputStream inputStream = getContentResolver().openInputStream(imageUri);
-             FileOutputStream outputStream = new FileOutputStream(file)) {
-            
-            if (inputStream == null) {
-                resetSubmitState();
-                Toast.makeText(this, R.string.error_reading_image, Toast.LENGTH_SHORT).show();
-                return;
-            }
-            
-            byte[] buffer = new byte[4096];
-            int length;
-            while ((length = inputStream.read(buffer)) > 0) {
-                outputStream.write(buffer, 0, length);
-            }
-            
-            // 创建上传请求
-            RequestBody requestBody = RequestBody.create(file, MediaType.parse("image/*"));
-            MultipartBody.Part imagePart = MultipartBody.Part.createFormData(AppConstants.FORM_FIELD_IMAGE, file.getName(), requestBody);
-            
-            String token = "Bearer " + prefsManager.getToken();
-            apiService.uploadImage(token, imagePart).enqueue(new Callback<UploadResponse>() {
-                @Override
-                public void onResponse(Call<UploadResponse> call, Response<UploadResponse> response) {
-                    // 清理临时文件
-                    if (file.exists()) {
-                        file.delete();
-                    }
-                    
-                    if (response.isSuccessful() && response.body() != null && response.body().isSuccess()) {
-                        uploadedImagePaths.add(response.body().getImagePath());
-                        // 上传下一张图片
-                        uploadNextImage(content, index + 1);
-                    } else {
-                        resetSubmitState();
-                        String errorMsg = response.body() != null && response.body().getMessage() != null ?
-                            response.body().getMessage() : getString(R.string.failed_to_upload_image);
-                        Toast.makeText(PublishQuestionActivity.this, errorMsg, Toast.LENGTH_LONG).show();
-                    }
-                }
-                
-                @Override
-                public void onFailure(Call<UploadResponse> call, Throwable t) {
-                    // 清理临时文件
-                    if (file.exists()) {
-                        file.delete();
-                    }
-                    
-                    resetSubmitState();
-                    String errorMsg = t.getMessage() != null ? 
-                        getString(R.string.upload_error, t.getMessage()) : 
-                        getString(R.string.failed_to_upload_image);
-                    Toast.makeText(PublishQuestionActivity.this, errorMsg, Toast.LENGTH_LONG).show();
-                }
-            });
-            
-        } catch (Exception e) {
-            resetSubmitState();
-            String errorMsg = e.getMessage() != null ? 
-                getString(R.string.error_message, e.getMessage()) : 
-                getString(R.string.error_reading_image);
-            Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show();
-            
-            // 清理临时文件
-            if (file.exists()) {
-                file.delete();
-            }
-        }
+        // 调用 ViewModel 处理上传和创建问题（符合 MVVM 架构）
+        viewModel.createQuestionWithImages(content, selectedImageUris);
     }
     
     /**
@@ -311,12 +224,6 @@ public class PublishQuestionActivity extends AppCompatActivity {
             binding.btnSubmit.setEnabled(true);
             binding.progressBar.setVisibility(android.view.View.GONE);
         }
-    }
-    
-    private void submitQuestionToServer(String content, List<String> imagePaths) {
-        viewModel.createQuestion(content, imagePaths);
-        Toast.makeText(this, R.string.question_submitted, Toast.LENGTH_SHORT).show();
-        finish();
     }
     
     @Override

@@ -1,6 +1,7 @@
 package com.dowdah.asknow.ui.chat;
 
 import android.app.Application;
+import android.net.Uri;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
@@ -9,6 +10,7 @@ import androidx.lifecycle.MutableLiveData;
 
 import com.dowdah.asknow.R;
 import com.dowdah.asknow.base.BaseViewModel;
+import com.dowdah.asknow.constants.AppConstants;
 import com.dowdah.asknow.constants.enums.MessageStatus;
 import com.dowdah.asknow.constants.enums.MessageType;
 import com.dowdah.asknow.constants.enums.QuestionStatus;
@@ -19,16 +21,24 @@ import com.dowdah.asknow.data.local.entity.MessageEntity;
 import com.dowdah.asknow.data.local.entity.QuestionEntity;
 import com.dowdah.asknow.data.model.MessageRequest;
 import com.dowdah.asknow.data.model.MessageResponse;
+import com.dowdah.asknow.data.model.UploadProgress;
+import com.dowdah.asknow.data.model.UploadResponse;
 import com.dowdah.asknow.data.repository.MessageRepository;
 import com.dowdah.asknow.utils.SharedPreferencesManager;
 import com.google.gson.JsonObject;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 import javax.inject.Inject;
 
 import dagger.hilt.android.lifecycle.HiltViewModel;
+import okhttp3.MediaType;
+import okhttp3.MultipartBody;
+import okhttp3.RequestBody;
 import retrofit2.Call;
 import retrofit2.Callback;
 import retrofit2.Response;
@@ -71,8 +81,10 @@ public class ChatViewModel extends BaseViewModel {
     private volatile boolean isAcceptingQuestion = false;
     private volatile boolean isClosingQuestion = false;
     private volatile boolean isSendingMessage = false;
+    private volatile boolean isUploadingImage = false;
     
     private final MutableLiveData<Boolean> messageSent = new MutableLiveData<>();
+    private final MutableLiveData<UploadProgress> uploadProgress = new MutableLiveData<>();
     
     @Inject
     public ChatViewModel(
@@ -478,6 +490,122 @@ public class ChatViewModel extends BaseViewModel {
     
     public LiveData<Boolean> getMessageSent() {
         return messageSent;
+    }
+    
+    public LiveData<UploadProgress> getUploadProgress() {
+        return uploadProgress;
+    }
+    
+    /**
+     * 上传图片并发送图片消息（符合 MVVM 架构）
+     * 
+     * @param imageUri 图片 URI
+     * @param questionId 问题 ID
+     */
+    public void uploadAndSendImage(Uri imageUri, long questionId) {
+        // 防抖：避免重复上传
+        if (isUploadingImage) {
+            Log.w(TAG, "Image upload already in progress, ignoring duplicate request");
+            return;
+        }
+        isUploadingImage = true;
+        
+        // 通知开始上传
+        uploadProgress.postValue(UploadProgress.inProgress(0, 1));
+        
+        // 在后台线程处理文件 I/O
+        executeInBackground(() -> {
+            File file = new File(getApplication().getCacheDir(), "temp_message_image_" + System.currentTimeMillis() + ".jpg");
+            
+            try (InputStream inputStream = getApplication().getContentResolver().openInputStream(imageUri);
+                 FileOutputStream outputStream = new FileOutputStream(file)) {
+                
+                if (inputStream == null) {
+                    handleUploadError(getApplication().getString(R.string.error_reading_image));
+                    return;
+                }
+                
+                byte[] buffer = new byte[4096];
+                int length;
+                while ((length = inputStream.read(buffer)) > 0) {
+                    outputStream.write(buffer, 0, length);
+                }
+                
+                // 文件准备好了，在主线程发起网络请求
+                new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+                    uploadImageAndSend(file, questionId);
+                });
+                
+            } catch (Exception e) {
+                // 清理临时文件
+                if (file.exists()) {
+                    file.delete();
+                }
+                
+                String errorMsg = e.getMessage() != null ? 
+                    getApplication().getString(R.string.error_message, e.getMessage()) : 
+                    getApplication().getString(R.string.error_reading_image);
+                handleUploadError(errorMsg);
+            }
+        });
+    }
+    
+    /**
+     * 上传图片文件并发送消息
+     * 
+     * @param file 要上传的文件
+     * @param questionId 问题 ID
+     */
+    private void uploadImageAndSend(File file, long questionId) {
+        RequestBody requestBody = RequestBody.create(file, MediaType.parse("image/*"));
+        MultipartBody.Part imagePart = MultipartBody.Part.createFormData(AppConstants.FORM_FIELD_IMAGE, file.getName(), requestBody);
+        
+        String token = "Bearer " + prefsManager.getToken();
+        apiService.uploadImage(token, imagePart).enqueue(new Callback<UploadResponse>() {
+            @Override
+            public void onResponse(Call<UploadResponse> call, Response<UploadResponse> response) {
+                // 清理临时文件
+                if (file.exists()) {
+                    file.delete();
+                }
+                
+                if (response.isSuccessful() && response.body() != null && response.body().isSuccess()) {
+                    String imagePath = response.body().getImagePath();
+                    // 上传成功，发送图片消息
+                    uploadProgress.postValue(UploadProgress.complete(1));
+                    isUploadingImage = false;
+                    sendImageMessage(questionId, imagePath);
+                } else {
+                    String errorMsg = response.body() != null && response.body().getMessage() != null ?
+                        response.body().getMessage() : getApplication().getString(R.string.failed_to_upload_image);
+                    handleUploadError(errorMsg);
+                }
+            }
+            
+            @Override
+            public void onFailure(Call<UploadResponse> call, Throwable t) {
+                // 清理临时文件
+                if (file.exists()) {
+                    file.delete();
+                }
+                
+                String errorMsg = t.getMessage() != null ? 
+                    getApplication().getString(R.string.upload_error, t.getMessage()) : 
+                    getApplication().getString(R.string.failed_to_upload_image);
+                handleUploadError(errorMsg);
+            }
+        });
+    }
+    
+    /**
+     * 处理上传错误
+     * 
+     * @param errorMsg 错误信息
+     */
+    private void handleUploadError(String errorMsg) {
+        uploadProgress.postValue(UploadProgress.error(0, 1, errorMsg));
+        isUploadingImage = false;
+        setError(errorMsg);
     }
     
     /**
